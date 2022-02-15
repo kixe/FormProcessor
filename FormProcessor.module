@@ -1,0 +1,534 @@
+<?php namespace ProcessWire;
+
+/**
+ * ProcessWire FormProcessor
+ * 
+ * Module to use templates as forms (backend / frontend). Send result via Email or create / edit a page
+ *
+ * 
+ * @author kixe (Christoph Thelen) note@qualyweb.com 2020-08-23
+ * @copyright © 2018 Christoph Thelen
+ * @license Licensed under GNU/GPL v3
+ * @link http://qualyweb.com
+ * 
+ * made for ProcessWire 3.x by Ryan Cramer 
+ * http://processwire.com
+ *
+ * @version 1.0.4
+ *
+ * changelog
+ * @since 1.0.3 - added option to obfuscate timestamps for pages - 2022-01-26
+ * @since 1.0.4 - fixed bug save always title in default language - 2022-02-07
+ *
+ * Usage
+ *
+ * 1. Create a new template (without file) and assign your fields to this template or choose an existing template as your form template
+ * 2. Create a template file for your form
+ * 3. Create a page and assign the form template to it.
+ *    Use the example below as a starting point for this form page
+ *    No need to set all properties
+ * @todo switch skipFields to showFields (whitelist)
+ *
+ *
+
+$form = $modules->get('FormProcessor');
+
+$form->template = $templates->get('frontendform']);
+$form->requiredFields = array('name','email');
+$form->skipFields = array('title');
+$form->hiddenFields = array('roles'=>array(37,1007),'language'=>'english');
+$form->successMessage = 'Thank you for submission';
+$form->addHookAfter('validator', null, 'hookCustomValidator');
+$form->email = 'emailrecipient@example.org';
+$form->emailSubject = 'Web Contact Form';
+$form->parent = 'parent page name';
+$form->status = 2048;
+$form->submitValue = 'Go!';
+$form->nameField = 'yourpagename';
+
+$body .=  $form->render(); // draw form or process submitted form
+
+function hookCustomValidator($event) {
+	//custom validation here
+ 	$f = $event->arguments(0);
+	if($f->fieldtovalidate) {} //do something
+	$f->fieldtovalidate->error('wrong input');
+	$f->fieldtovalidate->value = ('switched value');
+}
+
+ *
+ * 4. Use CSS like below or InputFieldWrapper to style the fields.
+ *
+ */
+
+
+class FormProcessor extends WireData implements Module {
+
+        /**
+         * Return an array of module information
+         *
+         * @return array
+         *
+         */
+        public static function getModuleInfo() {
+		return array(
+			'title' => 'Form Processor', 
+			'version' => 104, 
+			'author' => 'kixe', 
+			'summary' => 'Use templates as frontend forms. Can send forms as emails or save as pages.',
+			'singular' => false,
+			'autoload' => false,
+			);
+	}
+
+	/**
+	 * ProcessWire instance 
+	 *
+	 */
+	public $instanceID; 
+
+	/**
+	 * Instance of Page, that we use to hold our submitted form data. 
+	 *
+	 */
+	protected $page; 
+
+	/**
+	 * Initialize a new web form
+	 *
+	 * @param Template $template Template object holding the form's fields.
+	 *
+	 */
+	public function init() {
+		// create a page for holding our form fields
+		$this->page = new Page();
+		$this->page->id = 0;
+
+		// Template to use for the form fields (required).
+		// must be a Template object, it will be assigned to $this->page.
+		$this->set('template', null);
+
+	 	// Optional E-Mail address that form will get submitted to
+		$this->set('email', '');
+
+	 	// E-Mail sender
+		$this->set('fromEmail', 'noreply@example.org');
+
+		// Array of field names that are required to complete the submission
+		// if not specified, it will use the admin field settings.
+		$this->set('requiredFields', array());
+
+	 	// Array of field names that should be skipped when drawing AND processing the form
+		$this->set('skipFields', array('title'));
+
+	 	// Array of field names that will be added to the form when drawing AND processing the form
+	 	// whitelist. If empty all fields are added
+		$this->set('showFields', array());
+
+	 	// Associated Array of fieldnames and values that should be skipped when drawing the form but will be processed if set via API in the form-template file. Set $fieldname => $value
+		// $form->hiddenFields = array('myHiddenFieldKey'=>'myHiddenFieldValue');
+		$this->set('hiddenFields', array());
+
+		// Subject of the email that will be sent 
+		$this->set('emailSubject', 'Web Form Submission'); 
+
+		// Optional parent for the page.
+		// If ommited, the page will not be saved to the DB.
+		$this->set('parent', null);
+
+		// Status of page which stores submitted form data
+		$this->set('status', 2048); //default unpublished
+
+		// message output upon successful completion of the form. You have access to all submitted values to use them with sprintf()
+		$this->set('successMessage', 'Thank you, your submission has been sent!'); 
+
+		// field from where the page name is taken 
+		$this->set('nameField', null);
+
+		// submit field name and value
+		$this->set('submitValue', 'submit');
+
+		// set to true if email is sent and to page->id if page->save()
+		// also a hookable method success()
+		$this->set('success', false);
+
+		// will be set to true if any error occured in the form
+		$this->set('formError', false);
+
+		// set ProcessWire instance, allow usage if bootstrapped
+		$this->set('instance', $this->wire());
+
+		// force guest user as createdUser, modifiedUser for pages, instead of current user of this instance (if set)
+
+		$this->set('anonymus', false);
+		$this->set('obfuscateDate', false);
+	}
+
+	/**
+	 * Set properties to our Page Instance
+	 *
+	 */
+	public function set($key, $value) {
+		if($key == 'parent' && $value) {
+			if(!$value instanceof Page) throw new WireException('Parent must be a Page object');
+			$this->page->parent = $value;
+		} else if($key == 'template' && $value) {
+			if(!$value instanceof Template) throw new WireException('Template must be a Template object');
+			$this->page->template = $value;
+		}
+		return parent::set($key, $value);
+	}
+
+	/**
+	 * Name the page
+	 *
+	 * @return name default: date('Ymd')
+	 *
+	 */
+	protected function ___name() {
+		if(strlen($this->nameField)) {
+			if(!$this->page->template->hasField($this->nameField)) throw new WireException(sprintf('Name cannot be taken from Field "%s". Field is not part of the fieldgroup that is attached to the selected Template',$this->nameField));
+			if(in_array($this->nameField, $this->skipFields)) throw new WireException(sprintf('Name cannot be taken from Field "%s". Field is Element of skipFields Array',$this->nameField));
+			if ($this->instance->fields->get($this->nameField)->type == 'FieldTypeDatetime') return date('Ymd',$this->page->get($this->nameField));
+			return $this->page->get($this->nameField);
+		}
+		// take the name from title
+		elseif($this->page->parent->template->childNameFormat == 'title' && // very strict: parent template should allow this
+			$this->page->template->hasField('title') &&
+			!in_array('title', $this->skipFields) &&
+			strlen($this->page->title)) {
+				return $this->page->title;
+			}
+		else {
+			if ($this->obfuscateDate) $name = 'x';
+			else $name = date('Ymd');// allowed for name: alphanumeric + dot plus underscore (don't use dash because of counter)
+			if($this->instance->pages->get("name=$name,parent={$this->page->parent}")->id) {
+				if (strpos($name, '-')) $part = substr(0, strrchr($name, '-'));
+				else $part = $name;
+				$n = 0;
+				while ($this->instance->pages->get("name=$part-$n,parent={$this->page->parent}")->id) {
+					$n++;
+				}
+				$name = "$part-$n";
+			}
+
+			return $name; //date with appended number if more than one on the same day (20141024-17)
+			//return date('Ymd'); //date with appended number if name already exist (count child pages + 1) (20141024-17)
+			// if obfuscateDate is enabled 'x' instead of date is used
+		}
+	}
+
+	/**
+	 * Build the web form and add fields to it
+	 *
+	 */
+	protected function ___buildForm() {
+
+		// create the form
+		$form = $this->modules->get("InputfieldForm");
+		$form->method = 'post';
+		//if (!empty($this->wire('input')->urlSegments)) foreach ($this->wire('input')->urlSegments as $urlSegment) $urlSegString .= $urlSegment.'/';
+		$form->action = "./"; // if urlSegments add a trailing slash!
+		$q = $this->wire('input')->queryString;
+		if ($q) $form->action .= "?$q";
+
+		//var_dump($this->wire('input')->urlSegments);
+
+		// get the collection of inputs that can populate this page's fields
+		$inputfields = $this->page->getInputfields();
+
+		// make required fields 'required' and add fields to the form except skipFields and hiddenFields
+
+		foreach($inputfields as $inputfield) {
+			if(!empty($this->showFields) && !in_array($inputfield->name, $this->showFields)) continue; 
+			if(in_array($inputfield->name, $this->skipFields)) continue; 
+			if(array_key_exists($inputfield->name, $this->hiddenFields)) continue; 
+			if(in_array($inputfield->name, $this->requiredFields)) $inputfield->required = true; 
+			$form->add($inputfield);
+		}
+
+		// the inputfields don't already have a submit button, so we'll add one.
+		$submit = $this->modules->get("InputfieldSubmit");
+		$submit->skipLabel = Inputfield::skipLabelHeader;
+
+
+		// set a random name to the submit button so that this form doesn't process 
+		// any submissions without first receiving a rendered form. This isn't 
+		// necessary, but it may help to reduce automated spam to the form.
+		// TODO: make submit value configurable
+
+		$submit->value = $this->submitValue;
+		$submit->name = 'submit';
+
+		// add the submit button to the form
+		$form->add($submit);
+
+		return $form;
+	}
+
+	/**
+	 * Send an email with the results of the processed form
+	 *
+	 */
+	protected function ___sendEmail() {
+
+		$message = '';
+
+		foreach($this->page->fields as $field) {
+
+			// don't send the skipped fields
+			if(in_array($field, $this->skipFields)) continue; 
+			$label = $field->label;
+			$value = htmlentities($this->page->get($field->name));
+
+			$message .= "<strong>$label: </strong><span>$value</span><br/>";
+
+			// use the first found FieldtypeEmail as the 'From' email
+			if(!$this->fromEmail && $field->type instanceof FieldtypeEmail) {
+				//$this->fromEmail = $value;
+			}
+		}
+
+		foreach($this->hiddenFields as $hiddenFieldKey => $hiddenFieldvalue) {
+			$message .= "<strong>$hiddenFieldKey: </strong><span>$hiddenFieldvalue</span><br/>";
+		}
+
+		$message = "<html><head></head><body>$message</body></html>";
+		$headers = "Content-Type: text/html;";
+
+		if($this->fromEmail) $headers = "From: {$this->fromEmail}\n$headers";
+
+		// send the email
+		// use WireMail??
+		if (mail($this->email, $this->emailSubject, $message, $headers)) $this->success(true); 
+	}
+
+	/**
+	 * Save a new or existing page with the results of the processed form
+	 * force created user to be guest user for anonymus storage (e.g. polls) if $this->anonymus == true
+	 *
+	 */
+	protected function ___savePage() {
+		if($this->page->id) {
+			$this->page->of(false);
+			if ($this->page->save()) $this->success($this->page->id,true);
+			else {} // create logfile entry
+		}
+
+		else { //new page
+			if(!$this->page->parent) return;
+
+			// get name from function name() and make it unique
+			$pn = new PagesNames($this->instance->pages);
+			$this->page->name = $pn->uniquePageName($this->name(), $this->page);
+			$this->page->setQuietly('_hasAutogenName', $this->page->name); 
+
+			if (strlen($this->page->title)) {
+				unset($this->page->title); // if we have both, name and title and a duplicate entry we will get an Error, so we unset title and get an equal name and title
+				$settitle = true; //flag to set title after saving
+			}
+
+			$this->page->status = $this->status; //type int
+			//sort alphabetic uncomment following line to sort to last child
+			// $this->page->sort = $this->page->parent->numChildren;	
+
+			$fieldsarray = array();
+			foreach ($this->page as $key=>$value) {
+				$fieldsarray[$key] = $value;
+			}
+
+			foreach ($this->hiddenFields as $key=>$value) {
+				$fieldsarray[$key] = $value;
+			}
+
+			// if anonymus force guest user, remember current user
+			if ($this->anonymus && $this->instance->user->isGuest() == false) {
+				$cu = $this->instance->wire('user'); // current user
+				$gu = $this->instance->wire('users')->getGuestUser(); // guest user
+				$this->instance->wire('user', $gu);
+			}
+
+			// add new page
+			$new = $this->instance->pages->add($this->page->template, $this->page->parent, $fieldsarray);
+
+			// set the title if not exists
+			if (!strlen($new->title) && $new->template->hasField('title')) {
+				$new->of(false);
+				if (wire('modules')->isInstalled('LanguageSupport')) {
+					$new->setLanguageValue(wire('languages')->getDefault(), 'title', $new->name);
+				}
+				else $new->title = $new->name;
+				$new->save();
+			}
+
+			// obfuscate timestamps in page object to make it impossible to determine when the page has been created, modified, published
+			if ($this->obfuscateDate) {
+				foreach(['created', 'modified', 'published'] as $pageStamp) {
+					$this->instance->wire('pages')->touch($new, ['time' => 1, 'type' => $pageStamp]);
+				}
+			}
+
+			// reset to current user
+			if (!empty($cu)) $this->instance->wire('user', $cu);
+			if ($new->id) $this->success($new->id);
+		}
+	}
+	
+	/**
+	 * 
+	 * @return logfile entry.
+	 *
+	 */
+	public function log($filename, $text) {
+		$filename = $this->instance->log->getFilename($filename);
+		$log = new FileLog($filename);
+		// $log->setDelimeter("\t");
+		$text = preg_replace("!\s+!", "\t" , $text);
+		return $log->save(trim($text));
+	}
+
+	/**
+	 * Render a form or process it's input
+	 * @return string output of the form or success message upon completion.
+	 *
+	 */
+	public function ___render($id=null, $rerender=false) {
+		$sprintf = array();
+		if($id) {
+			if(!$this->instance->pages->get($id)->id) throw new WireException("The page with id=$id doesn't exist");
+			// 
+			else {
+				$this->page = $this->instance->pages->get($id);
+				$this->page->of(false);
+			}
+		}
+		else if(!$this->page->template) throw new WireException("You must specify a Template");
+
+		// prevent error if fieldtype file or image is assigned
+		else $this->instance->addHookBefore('PagefilesManager::path', function ($e) {$e->replace = true;$e->return = null;});
+
+		$form = $this->buildForm($this->page->id);
+
+		// if the form hasn't been submitted, then just return the rendered form.
+		if(!$this->input->post->submit) return $form->render();
+	
+		// now we assume the form has been submitted.
+		// tell the form to process input from the post vars.
+		// catch WireCSRFException if thrown by SessionCSRF::validate()
+		try {
+			$form->processInput($this->input->post);
+		} catch (WireCSRFException $e) {
+			// $message = $e->getMessage();
+			$message = $this->_('Your message could not be sent because the session is invalid or has expired. Consent to the use of session cookies must be given. Please check your browser settings and try again.');
+			$form->submit->error($message);
+		}
+
+		// call hookable function for optional custom validation 
+		if(!count($form->getErrors())) {
+			if(!$this->validator($form)) {
+				$this->formError = true;
+				return $form->render();
+			}
+		}
+
+		// see if any errors occurred
+		if(count($form->getErrors())) {
+			$this->formError = true;
+			// re-render the form, it will include the error messages
+			return $form->render();	
+		} else {
+			// successful form submission, so populate the new page with the new values.
+			foreach($form as $field) {
+
+				//security: trash skipFields or Fields not existing in form-template (resp. fieldgroup)
+				// Todo write log if manipulated
+				if(in_array($field->name , $this->skipFields) || !$this->page->template->hasField($field->name)) continue;
+				//assign fields to the page object
+				$this->page->set($field->name, $field->value);
+				$sprintf[] = $field->value;
+			}
+
+			if($this->email) $this->sendEmail();
+			if($id || $this->parent) $this->savePage();
+			$sprintf[0] = isset($sprintf[0])?$sprintf[0]:null;
+			$sprintf[1] = isset($sprintf[1])?$sprintf[1]:null;
+			$return = sprintf($this->successMessage, $sprintf[1], $sprintf[0]);
+			if($rerender) {
+				$form = $this->buildForm($this->page->id); // take values from database if form will be rerendered form after saving
+				return $form->render();
+			}
+			return $return; //get 1st 2 values of submitted form use %s or %d
+		
+		}
+
+	}
+
+	/**
+	 * hookable function called by render() to use for custom validation and modification of $form object
+	 *
+	 * @param instance of form
+	 * @return bool
+	 * @return false will force a rerender of the form
+	 */
+	protected function ___validator($form) {
+		return true;
+	}
+
+
+	/**
+	 * hookable function called by savePage() to do something after page is saved or email is sent
+	 * set the modules property success
+	 *
+	 * @abstract
+	 * @param page id/ bool (true if email is sent)
+	 * @param bool (true if existing page is modified)
+	 *
+	 */
+	protected function ___success($return, $modified = false) {
+		$this->success = $return;
+	}
+}
+
+
+/**
+ * Suggested styles to get started for styling the fields created by this module:
+ *
+ *
+
+.Inputfields,
+.Inputfields li {
+	list-style: none;
+	margin: 1em 0;
+	padding: 0;
+}
+
+.Inputfields li label {
+	font-weight: bold;
+}
+
+.Inputfields li p {
+	margin: 0;
+}
+
+.Inputfields li p.description {
+	font-style: italic;
+}
+
+.Inputfields textarea,
+.Inputfields .InputfieldMaxWidth {
+	width: 100%;
+}
+
+.Inputfields .InputfieldSubmit label {
+	display: none;
+}
+
+.ui-state-error-text {
+	color: red;
+}
+
+ */
+
+
+
+
