@@ -6,8 +6,8 @@
  * Module to use templates as forms (backend / frontend). Send result via Email or create / edit a page
  *
  * 
- * @author kixe (Christoph Thelen) note@qualyweb.com 2020-08-23
- * @copyright © 2018 Christoph Thelen
+ * @author kixe (Christoph Thelen) note@qualyweb.com 2014-10-02
+ * @copyright © 2014 Christoph Thelen
  * @license Licensed under GNU/GPL v3
  * @link http://qualyweb.com
  * 
