@@ -423,7 +423,7 @@ class FormProcessor extends WireData implements Module {
 			$form->submit->error($message);
 		}
 
-		// call hookable function for optional custom validation 
+		// call hookable function for optional custom validation
 		if(!count($form->getErrors())) {
 			if(!$this->validator($form)) {
 				$this->formError = true;
@@ -440,7 +440,7 @@ class FormProcessor extends WireData implements Module {
 			// successful form submission, so populate the new page with the new values.
 			foreach($form as $field) {
 
-				//security: trash skipFields or Fields not existing in form-template (resp. fieldgroup)
+				//security: ignore skipFields or Fields not existing in form-template (resp. fieldgroup)
 				// Todo write log if manipulated
 				if(in_array($field->name , $this->skipFields) || !$this->page->template->hasField($field->name)) continue;
 				//assign fields to the page object
