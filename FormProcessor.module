@@ -14,11 +14,12 @@
  * made for ProcessWire 3.x by Ryan Cramer 
  * http://processwire.com
  *
- * @version 1.0.4
+ * @version 1.0.5
  *
  * changelog
  * @since 1.0.3 - added option to obfuscate timestamps for pages - 2022-01-26
- * @since 1.0.4 - fixed bug save always title in default language - 2022-02-07
+ * @since 1.0.4 - fixed bug: save always title in default language - 2022-02-07
+ * @since 1.0.5 - fixed bug: ignore fields that need to have a page assigned if that page doesn't already exist - 2022-02-22
  *
  * Usage
  *
@@ -73,7 +74,7 @@ class FormProcessor extends WireData implements Module {
         public static function getModuleInfo() {
 		return array(
 			'title' => 'Form Processor', 
-			'version' => 104, 
+			'version' => 105, 
 			'author' => 'kixe', 
 			'summary' => 'Use templates as frontend forms. Can send forms as emails or save as pages.',
 			'singular' => false,
@@ -162,7 +163,7 @@ class FormProcessor extends WireData implements Module {
 
 		$this->set('anonymus', false);
 		$this->set('obfuscateDate', false);
-	}
+ 	}
 
 	/**
 	 * Set properties to our Page Instance
@@ -240,6 +241,8 @@ class FormProcessor extends WireData implements Module {
 		// make required fields 'required' and add fields to the form except skipFields and hiddenFields
 
 		foreach($inputfields as $inputfield) {
+			// ignore fields which needs a page assigned and page is not created yet
+			if (!$this->page->id && in_array($inputfield->className, ['InputfieldFile','InputfieldImage','InputfieldRepeater','InputfieldRepeaterMatrix'])) continue;
 			if(!empty($this->showFields) && !in_array($inputfield->name, $this->showFields)) continue; 
 			if(in_array($inputfield->name, $this->skipFields)) continue; 
 			if(array_key_exists($inputfield->name, $this->hiddenFields)) continue; 
