@@ -14,12 +14,13 @@
  * made for ProcessWire 3.x by Ryan Cramer 
  * http://processwire.com
  *
- * @version 1.0.5
+ * @version 1.0.6
  *
  * changelog
  * @since 1.0.3 - added option to obfuscate timestamps for pages - 2022-01-26
  * @since 1.0.4 - fixed bug: save always title in default language - 2022-02-07
  * @since 1.0.5 - fixed bug: ignore fields that need to have a page assigned if that page doesn't already exist - 2022-02-22
+ * @since 1.0.6 - fixed bug: https://github.com/kixe/FormProcessor/issues/1 - 2022-02-23
  *
  * Usage
  *
@@ -74,7 +75,7 @@ class FormProcessor extends WireData implements Module {
         public static function getModuleInfo() {
 		return array(
 			'title' => 'Form Processor', 
-			'version' => 105, 
+			'version' => 106, 
 			'author' => 'kixe', 
 			'summary' => 'Use templates as frontend forms. Can send forms as emails or save as pages.',
 			'singular' => false,
@@ -144,7 +145,7 @@ class FormProcessor extends WireData implements Module {
 		$this->set('successMessage', 'Thank you, your submission has been sent!'); 
 
 		// field from where the page name is taken 
-		$this->set('nameField', null);
+		$this->set('nameField', '');
 
 		// submit field name and value
 		$this->set('submitValue', 'submit');
@@ -326,7 +327,7 @@ class FormProcessor extends WireData implements Module {
 			$this->page->name = $pn->uniquePageName($this->name(), $this->page);
 			$this->page->setQuietly('_hasAutogenName', $this->page->name); 
 
-			if (strlen($this->page->title)) {
+			if (!empty($this->page->title)) {
 				unset($this->page->title); // if we have both, name and title and a duplicate entry we will get an Error, so we unset title and get an equal name and title
 				$settitle = true; //flag to set title after saving
 			}
@@ -408,7 +409,15 @@ class FormProcessor extends WireData implements Module {
 		else if(!$this->page->template) throw new WireException("You must specify a Template");
 
 		// prevent error if fieldtype file or image is assigned
-		else $this->instance->addHookBefore('PagefilesManager::path', function ($e) {$e->replace = true;$e->return = null;});
+		else {
+			$this->instance->addHookBefore('PagefilesManager::path', function ($e) {
+				if(empty($e->object->page->id)) {
+					$e->replace = true;
+					$e->return = null;
+				}
+			});
+		}
+		
 
 		$form = $this->buildForm($this->page->id);
 
