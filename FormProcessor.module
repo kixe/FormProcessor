@@ -14,13 +14,14 @@
  * made for ProcessWire 3.x by Ryan Cramer 
  * http://processwire.com
  *
- * @version 1.0.6
+ * @version 1.0.7
  *
  * changelog
  * @since 1.0.3 - added option to obfuscate timestamps for pages - 2022-01-26
  * @since 1.0.4 - fixed bug: save always title in default language - 2022-02-07
  * @since 1.0.5 - fixed bug: ignore fields that need to have a page assigned if that page doesn't already exist - 2022-02-22
  * @since 1.0.6 - fixed bug: https://github.com/kixe/FormProcessor/issues/1 - 2022-02-23
+ * @since 1.0.7 - added option for confirmation dialog (js) before submitting the form if a confirmation text is set, added option for sandbox mode - 2022-04-21
  *
  * Usage
  *
@@ -75,7 +76,7 @@ class FormProcessor extends WireData implements Module {
         public static function getModuleInfo() {
 		return array(
 			'title' => 'Form Processor', 
-			'version' => 106, 
+			'version' => 107, 
 			'author' => 'kixe', 
 			'summary' => 'Use templates as frontend forms. Can send forms as emails or save as pages.',
 			'singular' => false,
@@ -102,6 +103,12 @@ class FormProcessor extends WireData implements Module {
 	 *
 	 */
 	public function init() {
+
+		// wire('modules')->get('JqueryWireTabs');
+		$url = wire('config')->urls->get($this->className());
+		wire('config')->scripts->add($url . "FormProcessor.js");
+
+
 		// create a page for holding our form fields
 		$this->page = new Page();
 		$this->page->id = 0;
@@ -164,6 +171,13 @@ class FormProcessor extends WireData implements Module {
 
 		$this->set('anonymus', false);
 		$this->set('obfuscateDate', false);
+
+		// If applied, the InputfieldFormConfirm class is added to the form
+		// 1. The user is warned if they try to navigate away before submitting.
+		// 2. Confirmation dialog (js) will be opened with this text
+		$this->set('confirmText', '');
+
+		$this->set('sandbox', false);
  	}
 
 	/**
@@ -228,13 +242,16 @@ class FormProcessor extends WireData implements Module {
 
 		// create the form
 		$form = $this->modules->get("InputfieldForm");
+		$form->addClass('FormProcessor');
 		$form->method = 'post';
-		//if (!empty($this->wire('input')->urlSegments)) foreach ($this->wire('input')->urlSegments as $urlSegment) $urlSegString .= $urlSegment.'/';
+		// if (!empty($this->wire('input')->urlSegments)) foreach ($this->wire('input')->urlSegments as $urlSegment) $urlSegString .= $urlSegment.'/';
 		$form->action = "./"; // if urlSegments add a trailing slash!
 		$q = $this->wire('input')->queryString;
 		if ($q) $form->action .= "?$q";
-
-		//var_dump($this->wire('input')->urlSegments);
+		if (!empty($this->confirmText)) {
+			$form->addClass('InputfieldFormConfirm');
+			$form->set('confirmText', $this->confirmText);
+		}
 
 		// get the collection of inputs that can populate this page's fields
 		$inputfields = $this->page->getInputfields();
@@ -276,6 +293,8 @@ class FormProcessor extends WireData implements Module {
 	 */
 	protected function ___sendEmail() {
 
+		if ($this->sandbox) return;
+
 		$message = '';
 
 		foreach($this->page->fields as $field) {
@@ -313,6 +332,9 @@ class FormProcessor extends WireData implements Module {
 	 *
 	 */
 	protected function ___savePage() {
+
+		if ($this->sandbox) return;
+
 		if($this->page->id) {
 			$this->page->of(false);
 			if ($this->page->save()) $this->success($this->page->id,true);
