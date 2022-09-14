@@ -14,7 +14,7 @@
  * made for ProcessWire 3.x by Ryan Cramer 
  * http://processwire.com
  *
- * @version 1.0.7
+ * @version 1.0.9
  *
  * changelog
  * @since 1.0.3 - added option to obfuscate timestamps for pages - 2022-01-26
@@ -22,6 +22,9 @@
  * @since 1.0.5 - fixed bug: ignore fields that need to have a page assigned if that page doesn't already exist - 2022-02-22
  * @since 1.0.6 - fixed bug: https://github.com/kixe/FormProcessor/issues/1 - 2022-02-23
  * @since 1.0.7 - added option for confirmation dialog (js) before submitting the form if a confirmation text is set, added option for sandbox mode - 2022-04-21
+ * @since 1.0.8 added property inputDataArray to handle form rendering and submission without page saving
+ * @since 1.0.9 added option to add a form reset button and otion to set class attribute to submit button, added name property assigned as name attribute to the form tag
+ * 
  *
  * Usage
  *
@@ -76,7 +79,7 @@ class FormProcessor extends WireData implements Module {
         public static function getModuleInfo() {
 		return array(
 			'title' => 'Form Processor', 
-			'version' => 107, 
+			'version' => 109, 
 			'author' => 'kixe', 
 			'summary' => 'Use templates as frontend forms. Can send forms as emails or save as pages.',
 			'singular' => false,
@@ -108,10 +111,11 @@ class FormProcessor extends WireData implements Module {
 		$url = wire('config')->urls->get($this->className());
 		wire('config')->scripts->add($url . "FormProcessor.js");
 
-
 		// create a page for holding our form fields
 		$this->page = new Page();
 		$this->page->id = 0;
+
+		$this->set('name', $this->className()); // param true includes namespace
 
 		// Template to use for the form fields (required).
 		// must be a Template object, it will be assigned to $this->page.
@@ -155,7 +159,13 @@ class FormProcessor extends WireData implements Module {
 		$this->set('nameField', '');
 
 		// submit field name and value
-		$this->set('submitValue', 'submit');
+		$this->set('submitValue', 'Submit');
+		$this->set('submitName', 'submit');
+		$this->set('submitClass', 'submit');
+
+		// add a form reset button if set
+		$this->set('resetValue', ''); // leave empty to ignore
+		$this->set('resetClass', 'reset');
 
 		// set to true if email is sent and to page->id if page->save()
 		// also a hookable method success()
@@ -178,6 +188,10 @@ class FormProcessor extends WireData implements Module {
 		$this->set('confirmText', '');
 
 		$this->set('sandbox', false);
+
+		// if set will set / overwrite inputfield values before render
+		// after form processing submitted values will be set (hook after render to retrieve)
+		$this->set('inputDataArray', []);
  	}
 
 	/**
@@ -244,6 +258,7 @@ class FormProcessor extends WireData implements Module {
 		$form = $this->modules->get("InputfieldForm");
 		$form->addClass('FormProcessor');
 		$form->method = 'post';
+		$form->name = $this->name;
 		// if (!empty($this->wire('input')->urlSegments)) foreach ($this->wire('input')->urlSegments as $urlSegment) $urlSegString .= $urlSegment.'/';
 		$form->action = "./"; // if urlSegments add a trailing slash!
 		$q = $this->wire('input')->queryString;
@@ -265,6 +280,9 @@ class FormProcessor extends WireData implements Module {
 			if(in_array($inputfield->name, $this->skipFields)) continue; 
 			if(array_key_exists($inputfield->name, $this->hiddenFields)) continue; 
 			if(in_array($inputfield->name, $this->requiredFields)) $inputfield->required = true; 
+			if (!empty($this->inputDataArray) && isset($this->inputDataArray[$inputfield->name])) {
+				$inputfield->setAttribute('value', $this->inputDataArray[$inputfield->name]);
+			}
 			$form->add($inputfield);
 		}
 
@@ -276,14 +294,24 @@ class FormProcessor extends WireData implements Module {
 		// set a random name to the submit button so that this form doesn't process 
 		// any submissions without first receiving a rendered form. This isn't 
 		// necessary, but it may help to reduce automated spam to the form.
-		// TODO: make submit value configurable
 
 		$submit->value = $this->submitValue;
-		$submit->name = 'submit';
+		$submit->name = $this->submitName;
+		$submit->attr('class', $this->submitClass);
 
 		// add the submit button to the form
 		$form->add($submit);
 
+		// add reset button if set
+		if ($this->resetValue) {
+			$reset = $this->modules->get("InputfieldButton");
+			$reset->value = $this->resetValue;
+			$reset->attr('class', $this->resetClass);
+			$reset->attr('type', 'reset');
+			$reset->attr('name', 'reset');
+			$reset->attr('id', 'Inputfield_reset');
+			$form->add($reset);
+		}
 		return $form;
 	}
 
@@ -337,8 +365,13 @@ class FormProcessor extends WireData implements Module {
 
 		if($this->page->id) {
 			$this->page->of(false);
+
 			if ($this->page->save()) $this->success($this->page->id,true);
-			else {} // create logfile entry
+			// create logfile entry
+			else {
+				$this->log($this->className(), sprintf('Unable to save page with id', $this->page->id));
+				// $this->error(sprintf('Unable to save page with id', $this->page->id), Notice::logOnly);
+			}
 		}
 
 		else { //new page
@@ -415,10 +448,12 @@ class FormProcessor extends WireData implements Module {
 
 	/**
 	 * Render a form or process it's input
-	 * @return string output of the form or success message upon completion.
+	 * @param int $id page id
+	 * @param bool $rerender
+	 * @return string output of the form OR success message upon completion.
 	 *
 	 */
-	public function ___render($id=null, $rerender=false) {
+	public function ___render($id = null, $rerender = false) {
 		$sprintf = array();
 		if($id) {
 			if(!$this->instance->pages->get($id)->id) throw new WireException("The page with id=$id doesn't exist");
@@ -444,17 +479,20 @@ class FormProcessor extends WireData implements Module {
 		$form = $this->buildForm($this->page->id);
 
 		// if the form hasn't been submitted, then just return the rendered form.
-		if(!$this->input->post->submit) return $form->render();
+		if(!$this->input->post->{$this->submitName}) return $form->render();
 	
 		// now we assume the form has been submitted.
 		// tell the form to process input from the post vars.
 		// catch WireCSRFException if thrown by SessionCSRF::validate()
 		try {
-			$form->processInput($this->input->post);
+			$prevTokenName = wire('session')->CSRF->getTokenName();
+			$form->processInput($this->input->post);	
+			wire('session')->CSRF->resetToken();
+
 		} catch (WireCSRFException $e) {
 			// $message = $e->getMessage();
 			$message = $this->_('Your message could not be sent because the session is invalid or has expired. Consent to the use of session cookies must be given. Please check your browser settings and try again.');
-			$form->submit->error($message);
+			$form->{$this->submitName}->error($message);
 		}
 
 		// call hookable function for optional custom validation
@@ -471,6 +509,11 @@ class FormProcessor extends WireData implements Module {
 			// re-render the form, it will include the error messages
 			return $form->render();	
 		} else {
+			// set the submitted data as property: inputDataArray
+			$currTokenName = wire('session')->CSRF->getTokenName();
+			$ignoredKeys = array_merge($this->skipFields, ['_InputfieldForm', $this->submitName, $prevTokenName, $currTokenName]);
+			$this->set('inputDataArray', array_diff_key($form->getInput()->getArray(), array_flip($ignoredKeys)));
+
 			// successful form submission, so populate the new page with the new values.
 			foreach($form as $field) {
 
@@ -479,7 +522,7 @@ class FormProcessor extends WireData implements Module {
 				if(in_array($field->name , $this->skipFields) || !$this->page->template->hasField($field->name)) continue;
 				//assign fields to the page object
 				$this->page->set($field->name, $field->value);
-				$sprintf[] = $field->value;
+				$sprintf[] = $field->value;				
 			}
 
 			if($this->email) $this->sendEmail();
