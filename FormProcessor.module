@@ -14,7 +14,7 @@
  * made for ProcessWire 3.x by Ryan Cramer 
  * http://processwire.com
  *
- * @version 1.1.7 2024-10-28
+ * @version 1.1.9 2024-11-20
  *
  * changelog
  * @since 1.0.3 - added option to obfuscate timestamps for pages - 2022-01-26
@@ -32,7 +32,8 @@
  * @since 1.1.5 - added options['noHooks'] => true to function Page::save() if anonymus – 2024-04-16
  * @since 1.1.6 - fixed bug: removed switch to guest user if anonymus use Pages::touch() instead which prevent loosing field values not accessible for guest user – 2024-04-18
  * @since 1.1.7 - update token error handling / error text, translatable strings – 2024-10-28
-
+ * @since 1.1.8 - update added option page reload button (no post submit), option to modify visibility state of submit button. default: will be displayed only if at least one inputfield is editable  – 2024-11-15
+ * @since 1.1.9 - If a form is submitted but the authorization no longer exists, e.g. by reloading the page including submission of POST data, any success message is removed, an error message is displayed and the data is not processed. - 2024-11-20
  *
  * Usage
  *
@@ -87,7 +88,7 @@ class FormProcessor extends WireData implements Module {
         public static function getModuleInfo() {
 		return array(
 			'title' => 'Form Processor', 
-			'version' => 117, 
+			'version' => 119, 
 			'author' => 'kixe', 
 			'summary' => 'Use templates as frontend forms. Can send forms as emails or save as pages.',
 			'singular' => false,
@@ -171,15 +172,33 @@ class FormProcessor extends WireData implements Module {
 		$this->set('nameField', '');
 
 		// submit field name and value
+		// will only be shown if at least one inputfield is editable by current user
 		$this->set('submitValue', 'Submit');
 		$this->set('submitName', 'submit');
-		$this->set('submitClass', 'submit ui-button');
+		$this->set('submitClass', 'submit'); // additional CSS class
 		$this->set('showSubmitInHeader', false);
+
+		/**
+		 * force to show / hide submit button (even if there is no edtiable field)
+		 * @var null|bool
+		 * 
+		 * - null display only if ther is at leas one editable field (default)
+		 * - true always visible
+		 * - false always hidden
+		 * if (finally null or false) no processing of submitted data error message shown
+		 * 
+		 */ 
+		$this->set('showSubmitButton', null);
 
 		// add a form reset button if set
 		$this->set('resetValue', ''); // leave empty to ignore
-		$this->set('resetClass', 'reset ui-button');
+		$this->set('resetClass', 'reset'); // additional CSS class
 		$this->set('showResetInHeader', false);
+
+		// add a page reload button if set
+		$this->set('reloadValue', ''); // leave empty to ignore
+		$this->set('reloadClass', 'reload'); // additional CSS class
+		$this->set('showReloadInHeader', false);
 
 		// set to true if email is sent and to page->id if page->save()
 		// also a hookable method success()
@@ -289,7 +308,7 @@ class FormProcessor extends WireData implements Module {
 
 		foreach($inputfields as $inputfield) {
 			// ignore fields which needs a page assigned and page is not created yet
-			if (!$this->page->id && in_array($inputfield->className, ['InputfieldFile','InputfieldImage','InputfieldRepeater','InputfieldRepeaterMatrix'])) continue;
+			if (!$this->page->id && in_array($inputfield->className, ['InputfieldFile','InputfieldImage','InputfieldRepeater','InputfieldRepeaterMatrix','InputfieldIcon'])) continue;
 			if(!empty($this->showFields) && !in_array($inputfield->name, $this->showFields)) continue; 
 			if(in_array($inputfield->name, $this->skipFields)) continue; 
 			if(array_key_exists($inputfield->name, $this->hiddenFields)) continue; 
@@ -308,44 +327,76 @@ class FormProcessor extends WireData implements Module {
 				}
 				$inputfield->setAttribute('value', $values);
 			}
+			// at least one input field must be editable for the submit button to be displayed if $this->showSubmitButton === null
+			if ($this->showSubmitButton === null) {
+				$editable = $this->page->fieldgroup->getFieldContext($inputfield->name)->editable();
+				if ($editable && !in_array($inputfield->className, ['InputfieldForm','InputfieldFieldset','InputfieldHidden','InputfieldPageTitle','InputfieldMarkup','InputfieldIcon'])) {
+					$this->showSubmitButton = true;
+				}
+			}
 			$form->add($inputfield);
 		}
 
-		// the inputfields don't already have a submit button, so we'll add one.
-		$submit = $this->modules->get("InputfieldSubmit");
-		$submit->skipLabel = Inputfield::skipLabelHeader;
+		if ($this->showSubmitButton) {
+			$submit = $this->modules->get("InputfieldSubmit");
+			$submit->skipLabel = Inputfield::skipLabelHeader;
 
+			// set a random name to the submit button so that this form doesn't process 
+			// any submissions without first receiving a rendered form. This isn't 
+			// necessary, but it may help to reduce automated spam to the form.
 
-		// set a random name to the submit button so that this form doesn't process 
-		// any submissions without first receiving a rendered form. This isn't 
-		// necessary, but it may help to reduce automated spam to the form.
+			$submit->value = $this->submitValue;
+			$submit->name = $this->submitName;
+			$submit->addClass($this->submitClass);
 
-		$submit->value = $this->submitValue;
-		$submit->name = $this->submitName;
-		$submit->attr('class', $this->submitClass);
+			// add the submit button to the form if form is editable
+			$form->add($submit);
 
-		// add the submit button to the form
-		$form->add($submit);
+			// show submit button in header
+			if ($this->showSubmitInHeader) {
+				$submit->showInHeader(true);
+			}
+		} else if ($this->input->post->{$this->submitName}) {
+			// if a form is submitted but the authorization no longer exists, e.g. by reloading the page including submission of POST data, any success message is removed, an error message is displayed and the data is not processed.
+			$this->wire('notices')->remove($this->messages('last'));
+			$this->error($this->_('Invalid form submission. The form data cannot be processed.'));
+		}
 
 		// add reset button if set
 		if ($this->resetValue) {
 			$reset = $this->modules->get("InputfieldButton");
 			$reset->value = $this->resetValue;
-			$reset->attr('class', $this->resetClass);
+			$reset->addClass($this->resetClass);
 			$reset->attr('type', 'reset');
 			$reset->attr('name', 'reset');
 			$reset->removeAttr('required');
 			$reset->attr('id', 'Inputfield_reset');
 			$form->add($reset);
+
+			// show reset button in header
+			if ($this->showResetInHeader) {
+				$reset->addClass('pw-head-button');
+			}
 		}
 
-		// show buttons in header
-		if ($this->resetValue && $this->showResetInHeader) {
-			$reset->attr('class', "$this->resetClass pw-head-button uk-float-right ui-state-default");				
-		}
+		// add page reload button if set
+		if ($this->reloadValue) {
+			$reload = $this->modules->get("InputfieldButton");
+			$reload->value = $this->reloadValue;
+			$reload->addClass($this->reloadClass);
+			$reload->attr('type', 'button');
+			$reload->attr('name', 'reload');
+			$href = "./";
+			if ($q) $href .= "?$q";
+			$reload->attr('href', $href); 
+			$reload->removeAttr('required');
+			$reload->attr('id', 'Inputfield_reload');
+			$form->add($reload);
 
-		if ($this->showSubmitInHeader) {
-			$submit->showInHeader(true);
+			// show reset button in header
+			if ($this->showReloadInHeader) {
+				$reload->addClass('pw-head-button');
+			}
 		}
 
 		return $form;
@@ -529,6 +580,12 @@ class FormProcessor extends WireData implements Module {
 			wire('session')->CSRF->resetToken();
 
 		} catch (WireCSRFException $e) {
+
+			// form has been submitted again without submit button (no editable field) via browser page reload
+			if (empty($form->{$this->submitName})) {
+				return $form->render(); // no further processing
+			}
+
 			// $message = $e->getMessage();
 			$message = $this->_('The form could not be sent because the form token is invalid or has expired. This can happen if you try to resend entries that have already been sent. In addition, consent to the use of session cookies must be given. If this message keeps appearing, please check your browser settings and try again.');
 			$form->{$this->submitName}->error($message);

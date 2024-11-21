@@ -12,7 +12,7 @@ jQuery(document).ready(function() {
 	});
 	*/
 	// confirm dialog
-	$('.FormProcessor.InputfieldFormConfirm').submit( function() {
+	$('.FormProcessor.InputfieldFormConfirm').on('submit', function() {
 		var msg = $(this).attr('data-confirm');
 		if(confirm(msg)) {
 			return true;
